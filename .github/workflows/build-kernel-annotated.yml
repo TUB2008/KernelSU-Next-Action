@@ -1,0 +1,74 @@
+# GitHub Actions 工作流程文件：使用 Clang 构建内核
+name: Build kernel by clang-r383902b
+
+# 触发条件：手动触发
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # 作业名称
+    name: Build Kernel
+    # 运行环境
+    runs-on: ubuntu-latest
+    env:
+      # 内核仓库地址和分支
+      KERNEL_REPO: https://github.com/TUB2008/kernel_xiaomi_ares.git
+      KERNEL_BRANCH: U
+      # 设备代号，用于 defconfig
+      DEVICE: ares
+      # Clang 版本
+      CLANG_VER: r383902b
+      # 交叉编译前缀
+      CROSS_COMPILE: aarch64-linux-gnu-
+      # 架构
+      ARCH: arm64
+
+    steps:
+    - name: Checkout kernel source  # 检出内核源码
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ env.KERNEL_REPO }}  # 仓库 URL
+        ref: ${{ env.KERNEL_BRANCH }}       # 分支名
+
+    - name: Set up dependencies     # 安装构建依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git bc bison flex libssl-dev make gcc
+
+    - name: Download Clang Toolchain  # 下载并解压 Clang 预编译工具链
+      run: |
+        wget -qO clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${{ env.CLANG_VER }}.tar.gz"
+        mkdir -p $HOME/clang-${{ env.CLANG_VER }}
+        tar -xf clang.tar.gz -C $HOME/clang-${{ env.CLANG_VER }}
+
+    - name: Configure Kernel      # 使用 defconfig 生成 .config
+      run: |
+        export PATH="$HOME/clang-${{ env.CLANG_VER }}/bin:$PATH"
+        make O=out ${{ env.DEVICE }}_defconfig
+
+    - name: Build Kernel          # 执行内核编译，输出日志并保存到 build.log
+      run: |
+        export PATH="$HOME/clang-${{ env.CLANG_VER }}/bin:$PATH"
+        mkdir -p out
+        make -j$(nproc) O=out V=1 2>&1 | tee build.log
+
+    - name: Show last lines on failure  # 构建失败时，输出日志尾部用于调试
+      if: failure()
+      run: |
+        echo "===== 最后 200 行构建日志 ====="
+        tail -n 200 build.log || true
+
+    - name: Package with AnyKernel3  # 成功时，使用 AnyKernel3 打包成刷机包
+      if: success()
+      run: |
+        git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
+        cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+        cd AnyKernel3
+        zip -r ../${{ env.DEVICE }}-kernel-zip.zip .
+
+    - name: Upload Artifact        # 上传刷机包为构建产物
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ env.DEVICE }}-kernel-zip  # 上传名称
+        path: ${{ env.DEVICE }}-kernel-zip.zip  # 路径
